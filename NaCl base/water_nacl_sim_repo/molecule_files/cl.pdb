@@ -1,0 +1,4 @@
+REMARK Chloride ion (Joung-Cheatham, J. Phys. Chem. B 112, 9020, 2008)
+HETATM    1  Cl  CL      1       0.000   0.000   0.000
+TER
+END

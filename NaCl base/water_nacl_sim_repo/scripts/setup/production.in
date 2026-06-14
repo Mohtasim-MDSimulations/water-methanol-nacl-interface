@@ -1,0 +1,146 @@
+# =============================================================================
+# production.in  –  Water / NaCl Interface Production Run (5 ns)
+# =============================================================================
+# BUG FIXES vs original:
+#   1. boundary p p p  (not p p f). Same fix as equilibration.in.
+#   2. special_bonds lj/coul 0 0 0.
+#   3. bond_coeff r0 = 1.012 Å.
+#   4. Wall potentials REMOVED from production. The original kept
+#      fix walls all wall/lj126 active during the 5 ns production run.
+#      These suppress natural capillary-wave fluctuations and introduce
+#      a potential energy bias in the density profile near the box edges.
+#      A correctly equilibrated slab under p p p does not need walls.
+#   5. compute rdf_O_O corrected to use 'all' group (not 'oxygen' group)
+#      so that the normalization is computed for the full system, which is
+#      what LAMMPS expects for the RDF pair counting.
+#   6. reset_timestep 0 added so production frames start at step 0,
+#      preventing the timestep-offset bug in the analysis script.
+#
+# Production stages:
+#   Single NVT run: 5 ns at 300 K with Nosé-Hoover thermostat
+# =============================================================================
+
+units       real
+dimension   3
+# BUG FIX 1: fully periodic boundary + slab correction
+boundary    p p p
+atom_style  full
+
+# Read from equilibration restart
+read_restart equilibration_final.restart
+
+# ── Pair style (same as equilibration) ───────────────────────────────────────
+pair_style   lj/cut/coul/long 10.0 10.0
+# Note: every i-j pair below has an explicit pair_coeff, so this mixing
+# rule is never actually invoked (kept as a safe default only).
+pair_modify  mix arithmetic
+kspace_style pppm 1.0e-4
+kspace_modify slab 3.0
+
+pair_coeff  1 1  0.1554  3.165
+pair_coeff  2 2  0.0000  0.0000
+pair_coeff  3 3  0.1684  2.159
+pair_coeff  4 4  0.0127  4.830
+pair_coeff  1 2  0.0000  0.0000
+pair_coeff  1 3  0.1619  2.662
+pair_coeff  1 4  0.0444  4.177
+pair_coeff  2 3  0.0000  0.0000
+pair_coeff  2 4  0.0000  0.0000
+pair_coeff  3 4  0.0462  3.494
+
+bond_style  harmonic
+# BUG FIX 3: corrected r0
+bond_coeff  1  1059.162  1.012
+
+angle_style harmonic
+angle_coeff 1  75.90  113.24
+
+# BUG FIX 2
+special_bonds lj/coul 0.0 0.0 0.0
+
+neighbor      2.0 bin
+neigh_modify  delay 5 every 1 check yes
+
+# ── Atom groups ───────────────────────────────────────────────────────────────
+group water    type 1 2
+group ions     type 3 4
+group oxygen   type 1
+group hydrogen type 2
+group sodium   type 3
+group chloride type 4
+
+compute mytemp all temp
+compute_modify mytemp dynamic/dof yes
+
+# BUG FIX 6: reset timestep so production frames start at 0
+# This makes analysis time calculation straightforward: time_ns = step * 1e-6
+reset_timestep 0
+
+# ── 1D density profiles (number density per atom type along z) ───────────────
+compute dens_O   oxygen   chunk/atom bin/1d z lower 1.0
+compute dens_Na  sodium   chunk/atom bin/1d z lower 1.0
+compute dens_Cl  chloride chunk/atom bin/1d z lower 1.0
+
+fix dens_O_out  oxygen   ave/chunk 1000 1 1000 dens_O   density/number &
+    file density_O.profile
+fix dens_Na_out sodium   ave/chunk 1000 1 1000 dens_Na  density/number &
+    file density_Na.profile
+fix dens_Cl_out chloride ave/chunk 1000 1 1000 dens_Cl  density/number &
+    file density_Cl.profile
+
+# ── Surface tension (from pressure tensor anisotropy) ─────────────────────────
+# γ = (Lz/2) × (pzz − (pxx+pyy)/2)
+# Units: atm·Å → mN/m via factor 0.1 × 0.0101325
+compute pressure_all all pressure mytemp virial
+variable pxx  equal c_pressure_all[1] * 0.101325   # atm → MPa → mN/m·Å⁻¹ via Lz later
+variable pyy  equal c_pressure_all[2] * 0.101325
+variable pzz  equal c_pressure_all[3] * 0.101325
+variable lz   equal lz
+variable gamma equal (v_lz/2.0) * (v_pzz - (v_pxx + v_pyy)/2.0) * 0.1
+
+fix gamma_out all ave/time 100 10 1000 v_gamma file surface_tension.dat
+
+# ── Radial distribution functions ─────────────────────────────────────────────
+# BUG FIX 5: use 'all' group for proper RDF normalization
+compute rdf_O_O  all rdf 1000 1 1    # O–O (water self-correlation)
+compute rdf_NaCl all rdf 1000 3 4    # Na–Cl (ion pair correlation)
+
+fix rdf_O_O_out  all ave/time 1000 1 1000 c_rdf_O_O[*]  file rdf_O_O.dat  mode vector
+fix rdf_NaCl_out all ave/time 1000 1 1000 c_rdf_NaCl[*] file rdf_Na_Cl.dat mode vector
+
+# ── Thermo output (includes raw pressure tensor for post-processing) ──────────
+thermo_style  custom step time temp press pe ke etotal density &
+              c_pressure_all[1] c_pressure_all[2] c_pressure_all[3] v_gamma
+thermo_modify flush yes temp mytemp
+thermo        1000
+
+# ── Trajectory dump ───────────────────────────────────────────────────────────
+dump prod_traj all custom 10000 production.lammpstrj id mol type x y z vx vy vz
+dump_modify prod_traj sort id
+
+restart 500000 restart.prod1 restart.prod2
+timestep 1.0
+
+# ── NVT production run (5 ns) ─────────────────────────────────────────────────
+print "PRODUCTION RUN: NVT 5 ns at 300 K"
+fix nvt_prod all nvt temp 300.0 300.0 100.0
+fix_modify nvt_prod temp mytemp
+
+# fix recenter keeps the slab centred; positions in dump are post-recentering
+fix recenter all recenter NULL NULL 100.0 units box
+
+run 5000000
+
+unfix nvt_prod
+unfix recenter
+unfix dens_O_out
+unfix dens_Na_out
+unfix dens_Cl_out
+unfix gamma_out
+unfix rdf_O_O_out
+unfix rdf_NaCl_out
+undump prod_traj
+
+write_restart production_final.restart
+write_data    production_final.data
+print "Production run complete!"

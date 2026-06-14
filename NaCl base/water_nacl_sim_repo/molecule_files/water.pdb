@@ -1,0 +1,6 @@
+REMARK SPC/Fw water molecule (Wu et al., J. Chem. Phys. 124, 024503, 2006)
+REMARK O-H bond: r0=1.012 A  H-O-H angle: 113.24 deg
+HETATM    1  O   WAT     1       0.000   0.000   0.000
+HETATM    2  H1  WAT     1       0.000   0.957   0.000
+HETATM    3  H2  WAT     1       0.000  -0.260   0.924
+END
